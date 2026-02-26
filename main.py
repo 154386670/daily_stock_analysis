@@ -258,7 +258,7 @@ def run_full_analysis(
             if review_result:
                 market_report = review_result
         
-        # 输出摘要
+        # 输出摘要到控制台
         if results:
             logger.info("\n===== 分析结果摘要 =====")
             for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
@@ -270,44 +270,56 @@ def run_full_analysis(
         
         logger.info("\n任务执行完成")
 
-        # === 新增：生成飞书云文档 ===
+        # === 推送决策仪表盘顶部汇总信息到飞书 ===
         try:
-            feishu_doc = FeishuDocManager()
-            if feishu_doc.is_configured() and (results or market_report):
-                logger.info("正在创建飞书云文档...")
-
-                # 1. 准备标题 "01-01 13:01大盘复盘"
+            if results and not args.no_notify:
+                logger.info("正在推送决策仪表盘汇总信息到飞书...")
+                
                 tz_cn = timezone(timedelta(hours=8))
                 now = datetime.now(tz_cn)
-                doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 大盘复盘"
-
-                # 2. 准备内容 (拼接个股分析和大盘复盘)
-                full_content = ""
-
-                # 添加大盘复盘内容（如果有）
-                if market_report:
-                    full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
-
-                # 添加个股决策仪表盘（使用 NotificationService 生成）
-                if results:
-                    dashboard_content = pipeline.notifier.generate_dashboard_report(results)
-                    full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
-
-                # 3. 创建文档
-                doc_url = feishu_doc.create_daily_doc(doc_title, full_content)
-                if doc_url:
-                    logger.info(f"飞书云文档创建成功: {doc_url}")
-                    # 可选：将文档链接也推送到群里
-                    if not args.no_notify:
-                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+                
+                # 统计买卖建议数量
+                buy_count = 0
+                watch_count = 0
+                sell_count = 0
+                
+                for r in results:
+                    advice = getattr(r, 'operation_advice', '').lower()
+                    if '买入' in advice or 'buy' in advice or '加仓' in advice:
+                        buy_count += 1
+                    elif '卖出' in advice or 'sell' in advice or '减仓' in advice:
+                        sell_count += 1
+                    else:
+                        watch_count += 1
+                
+                # 构建汇总消息（只包含头部信息）
+                message = f"**🎯 {now.strftime('%Y-%m-%d')} 决策仪表盘**\n\n"
+                message += f"💬 共分析 {len(results)} 只股票 | "
+                message += f"🟢买入:{buy_count} 🟡观望:{watch_count} 🔴卖出:{sell_count}\n\n"
+                
+                # 按评分排序，显示所有股票的摘要信息
+                message += "**📊 分析结果摘要**\n\n"
+                
+                # 按评分降序排序
+                sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+                
+                for r in sorted_results:
+                    emoji = r.get_emoji()
+                    # 只显示股票名称、代码、建议和评分
+                    message += f"{emoji} {r.name}({r.code}): {r.operation_advice} | 评分 {r.sentiment_score} | {r.trend_prediction}\n"
+                
+                message += "\n────────\n\n"
+                message += "⚠️ 以上分析仅供参考，投资需谨慎"
+                
+                # 发送到飞书
+                pipeline.notifier.send(message)
+                logger.info("决策仪表盘汇总信息推送完成")
 
         except Exception as e:
-            logger.error(f"飞书文档生成失败: {e}")
+            logger.error(f"推送决策仪表盘汇总信息失败: {e}")
         
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
-
-
 def start_bot_stream_clients(config: Config) -> None:
     """Start bot stream clients when enabled in config."""
     # 启动钉钉 Stream 客户端
